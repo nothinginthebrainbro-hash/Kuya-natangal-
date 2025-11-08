@@ -1,0 +1,149 @@
+-- LocalScript (place in StarterPlayer > StarterPlayerScripts)
+-- Highlights other players only when they are within range AND visible (not blocked by walls).
+-- Not a cheat; does NOT reveal players through walls.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- Settings (adjust as needed)
+local MAX_DISTANCE = 120        -- max distance to consider highlighting (studs)
+local CHECK_RATE = 0.15        -- seconds between visibility checks per player
+local HIGHLIGHT_FILL_TRANSPARENCY = 0.6
+local HIGHLIGHT_OUTLINE_TRANSPARENCY = 0.2
+local HIGHLIGHT_DEPTH_MODE = Enum.HighlightDepthMode.Occluded -- how highlight behaves when occluded (we still rely on LOS)
+
+-- helper: create or return existing Highlight attached to a character
+local function getOrCreateHighlight(character)
+    if not character then return nil end
+    local existing = character:FindFirstChild("LocalVisibilityHighlight")
+    if existing and existing:IsA("Highlight") then
+        return existing
+    end
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "LocalVisibilityHighlight"
+    highlight.FillTransparency = HIGHLIGHT_FILL_TRANSPARENCY
+    highlight.OutlineTransparency = HIGHLIGHT_OUTLINE_TRANSPARENCY
+    highlight.DepthMode = HIGHLIGHT_DEPTH_MODE
+    highlight.Parent = character
+    return highlight
+end
+
+-- helper: remove highlight safely
+local function removeHighlight(character)
+    if not character then return end
+    local existing = character:FindFirstChild("LocalVisibilityHighlight")
+    if existing and existing:IsA("Highlight") then
+        existing:Destroy()
+    end
+end
+
+-- visibility test: raycast from camera to target's head/root; returns true if nothing blocks (except the target)
+local function isVisibleToCamera(targetPart)
+    if not targetPart or not Camera then return false end
+
+    local origin = Camera.CFrame.Position
+    local targetPos = targetPart.Position
+
+    local direction = targetPos - origin
+    local distance = direction.Magnitude
+    if distance <= 0 then return false end
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    -- ignore the local player's character so your own body can't block the ray
+    if LocalPlayer.Character then
+        rayParams.FilterDescendantsInstances = { LocalPlayer.Character }
+    else
+        rayParams.FilterDescendantsInstances = {}
+    end
+
+    local result = workspace:Raycast(origin, direction, rayParams)
+    if not result then
+        -- nothing hit -> unobstructed
+        return true
+    end
+
+    -- if the hit part belongs to the same character as targetPart, it's visible
+    local hitPart = result.Instance
+    if hitPart and hitPart:IsDescendantOf(targetPart.Parent) then
+        return true
+    end
+
+    return false
+end
+
+-- core loop per player: checks distance and visibility, updates highlight accordingly
+local function monitorPlayer(player)
+    -- do not monitor ourselves
+    if player == LocalPlayer then return end
+
+    local lastCheck = 0
+    -- coroutine so we can spawn one per player
+    local co = coroutine.create(function()
+        while player and player.Parent do
+            local now = tick()
+            if now - lastCheck >= CHECK_RATE then
+                lastCheck = now
+
+                local char = player.Character
+                if char and char.Parent then
+                    local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Humanoid") and char.Humanoid.RootPart
+                    local head = char:FindFirstChild("Head")
+                    local primaryPart = hrp or head
+
+                    if primaryPart then
+                        local dist = (primaryPart.Position - Camera.CFrame.Position).Magnitude
+                        if dist <= MAX_DISTANCE then
+                            if isVisibleToCamera(primaryPart) then
+                                local h = getOrCreateHighlight(char)
+                                h.Adornee = char -- highlight whole model
+                                h.Enabled = true
+                            else
+                                removeHighlight(char)
+                            end
+                        else
+                            removeHighlight(char)
+                        end
+                    else
+                        removeHighlight(char)
+                    end
+                else
+                    removeHighlight(char)
+                end
+            end
+            -- yield a small amount to avoid blocking; uses Heartbeat for smoothness
+            RunService.Heartbeat:Wait()
+        end
+        -- cleanup if player disappeared
+        if player and player.Character then
+            removeHighlight(player.Character)
+        end
+    end)
+    coroutine.resume(co)
+end
+
+-- set up existing players
+for _, p in ipairs(Players:GetPlayers()) do
+    monitorPlayer(p)
+end
+
+-- monitor future players
+Players.PlayerAdded:Connect(function(player)
+    monitorPlayer(player)
+end)
+
+-- also clean up highlights when players leave
+Players.PlayerRemoving:Connect(function(player)
+    if player.Character then
+        removeHighlight(player.Character)
+    end
+end)
+
+-- optional: if camera changes (e.g., respawn), nothing to change, but keep reference up-to-date
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    Camera = workspace.CurrentCamera
+end)
+
+print("[LocalVisibilityHighlights] Loaded: highlights appear only when players are visible and in range.")
