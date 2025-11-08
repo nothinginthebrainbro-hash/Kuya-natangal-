@@ -1,2 +1,0 @@
-# Kuya-natangal-
-Script roblox
